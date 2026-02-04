@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <LiquidCrystal.h>
+#include <LiquidCrystal_I2C.h>
 
 // --- Pin configuration ---
 const uint8_t PIN_TEMP_SENSOR = 12;  // DS18B20 data pin
@@ -18,12 +18,7 @@ const uint8_t PIN_FAN = 5;       // PWM
 const uint8_t PIN_AUGER = 6;     // relay/MOSFET
 const uint8_t PIN_IGNITER = 7;   // relay/MOSFET
 
-const uint8_t PIN_LCD_RS = 10;
-const uint8_t PIN_LCD_EN = 11;
-const uint8_t PIN_LCD_D4 = A0;
-const uint8_t PIN_LCD_D5 = A1;
-const uint8_t PIN_LCD_D6 = A2;
-const uint8_t PIN_LCD_D7 = A3;
+const uint8_t LCD_I2C_ADDRESS = 0x27;
 
 // --- Control targets ---
 float targetTempC = 70.0f;
@@ -52,7 +47,7 @@ bool augerOn = false;
 
 OneWire oneWire(PIN_TEMP_SENSOR);
 DallasTemperature tempSensors(&oneWire);
-LiquidCrystal lcd(PIN_LCD_RS, PIN_LCD_EN, PIN_LCD_D4, PIN_LCD_D5, PIN_LCD_D6, PIN_LCD_D7);
+LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 20, 4);
 
 enum MenuMode {
   MENU_STATUS,
@@ -149,44 +144,44 @@ void showStatusScreen(float tempC) {
   lcd.setCursor(0, 0);
   lcd.print("State: ");
   lcd.print(stateLabel(state));
-  lcd.print("    ");
+  lcd.print("        ");
   lcd.setCursor(0, 1);
   lcd.print("Temp: ");
   lcd.print(tempC, 1);
-  lcd.print("C     ");
+  lcd.print("C            ");
   lcd.setCursor(0, 2);
   lcd.print("Target: ");
   lcd.print(targetTempC, 1);
-  lcd.print("C    ");
+  lcd.print("C         ");
   lcd.setCursor(0, 3);
-  lcd.print("Start/Stop=Menu ");
+  lcd.print("Start/Stop=Menu   ");
 }
 
 void showEditScreen(const char *title, float value, const char *suffix) {
   lcd.setCursor(0, 0);
   lcd.print(title);
-  lcd.print("        ");
+  lcd.print("            ");
   lcd.setCursor(0, 1);
   lcd.print(value, 1);
   lcd.print(suffix);
-  lcd.print("         ");
+  lcd.print("             ");
   lcd.setCursor(0, 2);
-  lcd.print("Encoder=Adj ");
+  lcd.print("Encoder=Adj     ");
   lcd.setCursor(0, 3);
-  lcd.print("Enc=Next Stop=Exit ");
+  lcd.print("Enc=Next Stop=Exit");
 }
 
 void showEditScreenMs(const char *title, unsigned long valueMs) {
   lcd.setCursor(0, 0);
   lcd.print(title);
-  lcd.print("        ");
+  lcd.print("            ");
   lcd.setCursor(0, 1);
   lcd.print(valueMs / 1000);
   lcd.print(" sec       ");
   lcd.setCursor(0, 2);
-  lcd.print("Encoder=Adj ");
+  lcd.print("Encoder=Adj     ");
   lcd.setCursor(0, 3);
-  lcd.print("Enc=Next Stop=Exit ");
+  lcd.print("Enc=Next Stop=Exit");
 }
 
 void handleMenu(bool startPressed, bool stopPressed, bool encoderPressed, int encoderDelta) {
@@ -307,7 +302,8 @@ void setup() {
   setOutputs(false, false, false, 0);
 
   tempSensors.begin();
-  lcd.begin(16, 4);
+  lcd.init();
+  lcd.backlight();
   lcd.clear();
   lcd.print("Pellet Burner");
 
