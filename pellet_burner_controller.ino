@@ -2,32 +2,38 @@
 // Features: state machine, safety checks, simple temperature control
 
 #include <Arduino.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <LiquidCrystal.h>
 
 // --- Pin configuration ---
-const uint8_t PIN_TEMP_SENSOR = A0;
+const uint8_t PIN_TEMP_SENSOR = 4;   // DS18B20 data pin
 const uint8_t PIN_START_BUTTON = 2;  // active LOW with pull-up
 const uint8_t PIN_STOP_BUTTON = 3;   // active LOW with pull-up
+const uint8_t PIN_UP_BUTTON = 8;     // active LOW with pull-up
+const uint8_t PIN_DOWN_BUTTON = 9;   // active LOW with pull-up
 
 const uint8_t PIN_FAN = 5;       // PWM
 const uint8_t PIN_AUGER = 6;     // relay/MOSFET
 const uint8_t PIN_IGNITER = 7;   // relay/MOSFET
 
-// --- Temperature sensor (10k NTC) configuration ---
-const float THERMISTOR_NOMINAL = 10000.0f; // resistance at 25C
-const float TEMPERATURE_NOMINAL = 25.0f;   // in Celsius
-const float B_COEFFICIENT = 3950.0f;       // beta value
-const float SERIES_RESISTOR = 10000.0f;    // series resistor value
+const uint8_t PIN_LCD_RS = 10;
+const uint8_t PIN_LCD_EN = 11;
+const uint8_t PIN_LCD_D4 = 12;
+const uint8_t PIN_LCD_D5 = 13;
+const uint8_t PIN_LCD_D6 = A0;
+const uint8_t PIN_LCD_D7 = A1;
 
 // --- Control targets ---
-const float TARGET_TEMP_C = 70.0f;
-const float MAX_TEMP_C = 95.0f;
-const float MIN_FLAME_TEMP_C = 40.0f; // below this means flame-out
+float targetTempC = 70.0f;
+float maxTempC = 95.0f;
+float minFlameTempC = 40.0f; // below this means flame-out
 
 // --- Timings ---
-const unsigned long IGNITION_TIME_MS = 300000; // 5 minutes
-const unsigned long COOLDOWN_TIME_MS = 180000; // 3 minutes
-const unsigned long AUGER_ON_MS = 800;
-const unsigned long AUGER_OFF_MS = 3200;
+unsigned long ignitionTimeMs = 300000; // 5 minutes
+unsigned long cooldownTimeMs = 180000; // 3 minutes
+unsigned long augerOnMs = 800;
+unsigned long augerOffMs = 3200;
 
 // --- State machine ---
 enum State {
@@ -43,22 +49,32 @@ unsigned long stateStartMs = 0;
 unsigned long lastAugerToggleMs = 0;
 bool augerOn = false;
 
+OneWire oneWire(PIN_TEMP_SENSOR);
+DallasTemperature tempSensors(&oneWire);
+LiquidCrystal lcd(PIN_LCD_RS, PIN_LCD_EN, PIN_LCD_D4, PIN_LCD_D5, PIN_LCD_D6, PIN_LCD_D7);
+
+enum MenuMode {
+  MENU_STATUS,
+  MENU_EDIT_TARGET,
+  MENU_EDIT_MAX,
+  MENU_EDIT_MIN_FLAME,
+  MENU_EDIT_IGNITION,
+  MENU_EDIT_COOLDOWN,
+  MENU_EDIT_AUGER_ON,
+  MENU_EDIT_AUGER_OFF
+};
+
+MenuMode menuMode = MENU_STATUS;
+unsigned long lastLcdUpdateMs = 0;
+
 // --- Helper functions ---
 float readTemperatureC() {
-  int adc = analogRead(PIN_TEMP_SENSOR);
-  if (adc <= 0) {
+  tempSensors.requestTemperatures();
+  float tempC = tempSensors.getTempCByIndex(0);
+  if (tempC == DEVICE_DISCONNECTED_C) {
     return -100.0f;
   }
-
-  float resistance = SERIES_RESISTOR / ((1023.0f / adc) - 1.0f);
-  float steinhart;
-  steinhart = resistance / THERMISTOR_NOMINAL;
-  steinhart = log(steinhart);
-  steinhart /= B_COEFFICIENT;
-  steinhart += 1.0f / (TEMPERATURE_NOMINAL + 273.15f);
-  steinhart = 1.0f / steinhart;
-  steinhart -= 273.15f;
-  return steinhart;
+  return tempC;
 }
 
 void setOutputs(bool fan, bool auger, bool igniter, uint8_t fanPwm) {
@@ -80,34 +96,247 @@ void enterState(State next) {
 
 void updateAugerCycle() {
   unsigned long now = millis();
-  unsigned long interval = augerOn ? AUGER_ON_MS : AUGER_OFF_MS;
+  unsigned long interval = augerOn ? augerOnMs : augerOffMs;
   if (now - lastAugerToggleMs >= interval) {
     augerOn = !augerOn;
     lastAugerToggleMs = now;
   }
 }
 
+const char *stateLabel(State current) {
+  switch (current) {
+    case STATE_IDLE:
+      return "IDLE";
+    case STATE_IGNITION:
+      return "IGNITION";
+    case STATE_RUN:
+      return "RUN";
+    case STATE_COOLDOWN:
+      return "COOLDOWN";
+    case STATE_FAULT:
+      return "FAULT";
+  }
+  return "UNKNOWN";
+}
+
+void showStatusScreen(float tempC) {
+  lcd.setCursor(0, 0);
+  lcd.print("State: ");
+  lcd.print(stateLabel(state));
+  lcd.print("    ");
+  lcd.setCursor(0, 1);
+  lcd.print("Temp: ");
+  lcd.print(tempC, 1);
+  lcd.print("C     ");
+  lcd.setCursor(0, 2);
+  lcd.print("Target: ");
+  lcd.print(targetTempC, 1);
+  lcd.print("C    ");
+  lcd.setCursor(0, 3);
+  lcd.print("Start/Stop=Menu ");
+}
+
+void showEditScreen(const char *title, float value, const char *suffix) {
+  lcd.setCursor(0, 0);
+  lcd.print(title);
+  lcd.print("        ");
+  lcd.setCursor(0, 1);
+  lcd.print(value, 1);
+  lcd.print(suffix);
+  lcd.print("         ");
+  lcd.setCursor(0, 2);
+  lcd.print("Up/Down=Adj ");
+  lcd.setCursor(0, 3);
+  lcd.print("Start=Next Stop=Exit ");
+}
+
+void showEditScreenMs(const char *title, unsigned long valueMs) {
+  lcd.setCursor(0, 0);
+  lcd.print(title);
+  lcd.print("        ");
+  lcd.setCursor(0, 1);
+  lcd.print(valueMs / 1000);
+  lcd.print(" sec       ");
+  lcd.setCursor(0, 2);
+  lcd.print("Up/Down=Adj ");
+  lcd.setCursor(0, 3);
+  lcd.print("Start=Next Stop=Exit ");
+}
+
+void handleMenu(bool startPressed, bool stopPressed, bool upPressed, bool downPressed) {
+  if (menuMode == MENU_STATUS) {
+    if (startPressed) {
+      menuMode = MENU_EDIT_TARGET;
+    } else if (stopPressed) {
+      menuMode = MENU_EDIT_TARGET;
+    }
+    return;
+  }
+
+  if (stopPressed) {
+    menuMode = MENU_STATUS;
+    return;
+  }
+
+  if (startPressed) {
+    switch (menuMode) {
+      case MENU_EDIT_TARGET:
+        menuMode = MENU_EDIT_MAX;
+        break;
+      case MENU_EDIT_MAX:
+        menuMode = MENU_EDIT_MIN_FLAME;
+        break;
+      case MENU_EDIT_MIN_FLAME:
+        menuMode = MENU_EDIT_IGNITION;
+        break;
+      case MENU_EDIT_IGNITION:
+        menuMode = MENU_EDIT_COOLDOWN;
+        break;
+      case MENU_EDIT_COOLDOWN:
+        menuMode = MENU_EDIT_AUGER_ON;
+        break;
+      case MENU_EDIT_AUGER_ON:
+        menuMode = MENU_EDIT_AUGER_OFF;
+        break;
+      case MENU_EDIT_AUGER_OFF:
+        menuMode = MENU_STATUS;
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (upPressed) {
+    switch (menuMode) {
+      case MENU_EDIT_TARGET:
+        targetTempC += 1.0f;
+        break;
+      case MENU_EDIT_MAX:
+        maxTempC += 1.0f;
+        break;
+      case MENU_EDIT_MIN_FLAME:
+        minFlameTempC += 1.0f;
+        break;
+      case MENU_EDIT_IGNITION:
+        ignitionTimeMs += 10000;
+        break;
+      case MENU_EDIT_COOLDOWN:
+        cooldownTimeMs += 10000;
+        break;
+      case MENU_EDIT_AUGER_ON:
+        augerOnMs += 100;
+        break;
+      case MENU_EDIT_AUGER_OFF:
+        augerOffMs += 100;
+        break;
+      default:
+        break;
+    }
+  } else if (downPressed) {
+    switch (menuMode) {
+      case MENU_EDIT_TARGET:
+        targetTempC = max(0.0f, targetTempC - 1.0f);
+        break;
+      case MENU_EDIT_MAX:
+        maxTempC = max(0.0f, maxTempC - 1.0f);
+        break;
+      case MENU_EDIT_MIN_FLAME:
+        minFlameTempC = max(0.0f, minFlameTempC - 1.0f);
+        break;
+      case MENU_EDIT_IGNITION:
+        ignitionTimeMs = max(10000UL, ignitionTimeMs - 10000);
+        break;
+      case MENU_EDIT_COOLDOWN:
+        cooldownTimeMs = max(10000UL, cooldownTimeMs - 10000);
+        break;
+      case MENU_EDIT_AUGER_ON:
+        augerOnMs = max(100UL, augerOnMs - 100);
+        break;
+      case MENU_EDIT_AUGER_OFF:
+        augerOffMs = max(100UL, augerOffMs - 100);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (millis() - lastLcdUpdateMs < 250) {
+    return;
+  }
+  lastLcdUpdateMs = millis();
+
+  switch (menuMode) {
+    case MENU_EDIT_TARGET:
+      showEditScreen("Target temp", targetTempC, "C");
+      break;
+    case MENU_EDIT_MAX:
+      showEditScreen("Max temp", maxTempC, "C");
+      break;
+    case MENU_EDIT_MIN_FLAME:
+      showEditScreen("Min flame", minFlameTempC, "C");
+      break;
+    case MENU_EDIT_IGNITION:
+      showEditScreenMs("Ignition time", ignitionTimeMs);
+      break;
+    case MENU_EDIT_COOLDOWN:
+      showEditScreenMs("Cooldown time", cooldownTimeMs);
+      break;
+    case MENU_EDIT_AUGER_ON:
+      showEditScreenMs("Auger ON", augerOnMs);
+      break;
+    case MENU_EDIT_AUGER_OFF:
+      showEditScreenMs("Auger OFF", augerOffMs);
+      break;
+    default:
+      break;
+  }
+}
+
 void setup() {
   pinMode(PIN_START_BUTTON, INPUT_PULLUP);
   pinMode(PIN_STOP_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_UP_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_DOWN_BUTTON, INPUT_PULLUP);
 
   pinMode(PIN_FAN, OUTPUT);
   pinMode(PIN_AUGER, OUTPUT);
   pinMode(PIN_IGNITER, OUTPUT);
 
   setOutputs(false, false, false, 0);
+
+  tempSensors.begin();
+  lcd.begin(16, 4);
+  lcd.clear();
+  lcd.print("Pellet Burner");
 }
 
 void loop() {
   float tempC = readTemperatureC();
   bool startPressed = buttonPressed(PIN_START_BUTTON);
   bool stopPressed = buttonPressed(PIN_STOP_BUTTON);
+  bool upPressed = buttonPressed(PIN_UP_BUTTON);
+  bool downPressed = buttonPressed(PIN_DOWN_BUTTON);
+
+  if (menuMode == MENU_STATUS) {
+    if (startPressed || stopPressed) {
+      menuMode = MENU_EDIT_TARGET;
+      lcd.clear();
+    }
+
+    if (millis() - lastLcdUpdateMs >= 500) {
+      lastLcdUpdateMs = millis();
+      showStatusScreen(tempC);
+    }
+  } else {
+    handleMenu(startPressed, stopPressed, upPressed, downPressed);
+  }
 
   if (stopPressed && state != STATE_IDLE) {
     enterState(STATE_COOLDOWN);
   }
 
-  if (tempC >= MAX_TEMP_C) {
+  if (tempC >= maxTempC) {
     enterState(STATE_FAULT);
   }
 
@@ -123,11 +352,11 @@ void loop() {
       updateAugerCycle();
       setOutputs(true, augerOn, true, 200);
 
-      if (tempC >= MIN_FLAME_TEMP_C) {
+      if (tempC >= minFlameTempC) {
         enterState(STATE_RUN);
       }
 
-      if (millis() - stateStartMs >= IGNITION_TIME_MS) {
+      if (millis() - stateStartMs >= ignitionTimeMs) {
         enterState(STATE_FAULT);
       }
       break;
@@ -135,12 +364,12 @@ void loop() {
 
     case STATE_RUN: {
       updateAugerCycle();
-      bool needHeat = tempC < TARGET_TEMP_C;
+      bool needHeat = tempC < targetTempC;
       uint8_t fanPwm = needHeat ? 220 : 160;
 
       setOutputs(true, needHeat ? augerOn : false, false, fanPwm);
 
-      if (tempC < MIN_FLAME_TEMP_C) {
+      if (tempC < minFlameTempC) {
         enterState(STATE_FAULT);
       }
       break;
@@ -148,7 +377,7 @@ void loop() {
 
     case STATE_COOLDOWN:
       setOutputs(true, false, false, 160);
-      if (millis() - stateStartMs >= COOLDOWN_TIME_MS) {
+      if (millis() - stateStartMs >= cooldownTimeMs) {
         enterState(STATE_IDLE);
       }
       break;
