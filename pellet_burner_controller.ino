@@ -7,11 +7,12 @@
 #include <LiquidCrystal.h>
 
 // --- Pin configuration ---
-const uint8_t PIN_TEMP_SENSOR = 4;   // DS18B20 data pin
+const uint8_t PIN_TEMP_SENSOR = 12;  // DS18B20 data pin
 const uint8_t PIN_START_BUTTON = 2;  // active LOW with pull-up
 const uint8_t PIN_STOP_BUTTON = 3;   // active LOW with pull-up
-const uint8_t PIN_UP_BUTTON = 8;     // active LOW with pull-up
-const uint8_t PIN_DOWN_BUTTON = 9;   // active LOW with pull-up
+const uint8_t PIN_ENCODER_A = 8;     // active LOW with pull-up
+const uint8_t PIN_ENCODER_B = 9;     // active LOW with pull-up
+const uint8_t PIN_ENCODER_BTN = 4;   // active LOW with pull-up
 
 const uint8_t PIN_FAN = 5;       // PWM
 const uint8_t PIN_AUGER = 6;     // relay/MOSFET
@@ -19,10 +20,10 @@ const uint8_t PIN_IGNITER = 7;   // relay/MOSFET
 
 const uint8_t PIN_LCD_RS = 10;
 const uint8_t PIN_LCD_EN = 11;
-const uint8_t PIN_LCD_D4 = 12;
-const uint8_t PIN_LCD_D5 = 13;
-const uint8_t PIN_LCD_D6 = A0;
-const uint8_t PIN_LCD_D7 = A1;
+const uint8_t PIN_LCD_D4 = A0;
+const uint8_t PIN_LCD_D5 = A1;
+const uint8_t PIN_LCD_D6 = A2;
+const uint8_t PIN_LCD_D7 = A3;
 
 // --- Control targets ---
 float targetTempC = 70.0f;
@@ -66,6 +67,7 @@ enum MenuMode {
 
 MenuMode menuMode = MENU_STATUS;
 unsigned long lastLcdUpdateMs = 0;
+int8_t lastEncoderState = 0;
 
 // --- Helper functions ---
 float readTemperatureC() {
@@ -85,6 +87,30 @@ void setOutputs(bool fan, bool auger, bool igniter, uint8_t fanPwm) {
 
 bool buttonPressed(uint8_t pin) {
   return digitalRead(pin) == LOW;
+}
+
+int readEncoderDelta() {
+  int a = digitalRead(PIN_ENCODER_A);
+  int b = digitalRead(PIN_ENCODER_B);
+  int8_t state = (a << 1) | b;
+  int delta = 0;
+
+  if (state != lastEncoderState) {
+    if ((lastEncoderState == 0b00 && state == 0b01) ||
+        (lastEncoderState == 0b01 && state == 0b11) ||
+        (lastEncoderState == 0b11 && state == 0b10) ||
+        (lastEncoderState == 0b10 && state == 0b00)) {
+      delta = 1;
+    } else if ((lastEncoderState == 0b00 && state == 0b10) ||
+               (lastEncoderState == 0b10 && state == 0b11) ||
+               (lastEncoderState == 0b11 && state == 0b01) ||
+               (lastEncoderState == 0b01 && state == 0b00)) {
+      delta = -1;
+    }
+    lastEncoderState = state;
+  }
+
+  return delta;
 }
 
 void enterState(State next) {
@@ -145,9 +171,9 @@ void showEditScreen(const char *title, float value, const char *suffix) {
   lcd.print(suffix);
   lcd.print("         ");
   lcd.setCursor(0, 2);
-  lcd.print("Up/Down=Adj ");
+  lcd.print("Encoder=Adj ");
   lcd.setCursor(0, 3);
-  lcd.print("Start=Next Stop=Exit ");
+  lcd.print("Enc=Next Stop=Exit ");
 }
 
 void showEditScreenMs(const char *title, unsigned long valueMs) {
@@ -158,12 +184,12 @@ void showEditScreenMs(const char *title, unsigned long valueMs) {
   lcd.print(valueMs / 1000);
   lcd.print(" sec       ");
   lcd.setCursor(0, 2);
-  lcd.print("Up/Down=Adj ");
+  lcd.print("Encoder=Adj ");
   lcd.setCursor(0, 3);
-  lcd.print("Start=Next Stop=Exit ");
+  lcd.print("Enc=Next Stop=Exit ");
 }
 
-void handleMenu(bool startPressed, bool stopPressed, bool upPressed, bool downPressed) {
+void handleMenu(bool startPressed, bool stopPressed, bool encoderPressed, int encoderDelta) {
   if (menuMode == MENU_STATUS) {
     if (startPressed) {
       menuMode = MENU_EDIT_TARGET;
@@ -178,7 +204,7 @@ void handleMenu(bool startPressed, bool stopPressed, bool upPressed, bool downPr
     return;
   }
 
-  if (startPressed) {
+  if (encoderPressed) {
     switch (menuMode) {
       case MENU_EDIT_TARGET:
         menuMode = MENU_EDIT_MAX;
@@ -207,54 +233,28 @@ void handleMenu(bool startPressed, bool stopPressed, bool upPressed, bool downPr
     return;
   }
 
-  if (upPressed) {
+  if (encoderDelta != 0) {
     switch (menuMode) {
       case MENU_EDIT_TARGET:
-        targetTempC += 1.0f;
+        targetTempC = max(0.0f, targetTempC + encoderDelta);
         break;
       case MENU_EDIT_MAX:
-        maxTempC += 1.0f;
+        maxTempC = max(0.0f, maxTempC + encoderDelta);
         break;
       case MENU_EDIT_MIN_FLAME:
-        minFlameTempC += 1.0f;
+        minFlameTempC = max(0.0f, minFlameTempC + encoderDelta);
         break;
       case MENU_EDIT_IGNITION:
-        ignitionTimeMs += 10000;
+        ignitionTimeMs = max(10000UL, ignitionTimeMs + (encoderDelta * 10000L));
         break;
       case MENU_EDIT_COOLDOWN:
-        cooldownTimeMs += 10000;
+        cooldownTimeMs = max(10000UL, cooldownTimeMs + (encoderDelta * 10000L));
         break;
       case MENU_EDIT_AUGER_ON:
-        augerOnMs += 100;
+        augerOnMs = max(100UL, augerOnMs + (encoderDelta * 100L));
         break;
       case MENU_EDIT_AUGER_OFF:
-        augerOffMs += 100;
-        break;
-      default:
-        break;
-    }
-  } else if (downPressed) {
-    switch (menuMode) {
-      case MENU_EDIT_TARGET:
-        targetTempC = max(0.0f, targetTempC - 1.0f);
-        break;
-      case MENU_EDIT_MAX:
-        maxTempC = max(0.0f, maxTempC - 1.0f);
-        break;
-      case MENU_EDIT_MIN_FLAME:
-        minFlameTempC = max(0.0f, minFlameTempC - 1.0f);
-        break;
-      case MENU_EDIT_IGNITION:
-        ignitionTimeMs = max(10000UL, ignitionTimeMs - 10000);
-        break;
-      case MENU_EDIT_COOLDOWN:
-        cooldownTimeMs = max(10000UL, cooldownTimeMs - 10000);
-        break;
-      case MENU_EDIT_AUGER_ON:
-        augerOnMs = max(100UL, augerOnMs - 100);
-        break;
-      case MENU_EDIT_AUGER_OFF:
-        augerOffMs = max(100UL, augerOffMs - 100);
+        augerOffMs = max(100UL, augerOffMs + (encoderDelta * 100L));
         break;
       default:
         break;
@@ -296,8 +296,9 @@ void handleMenu(bool startPressed, bool stopPressed, bool upPressed, bool downPr
 void setup() {
   pinMode(PIN_START_BUTTON, INPUT_PULLUP);
   pinMode(PIN_STOP_BUTTON, INPUT_PULLUP);
-  pinMode(PIN_UP_BUTTON, INPUT_PULLUP);
-  pinMode(PIN_DOWN_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_ENCODER_A, INPUT_PULLUP);
+  pinMode(PIN_ENCODER_B, INPUT_PULLUP);
+  pinMode(PIN_ENCODER_BTN, INPUT_PULLUP);
 
   pinMode(PIN_FAN, OUTPUT);
   pinMode(PIN_AUGER, OUTPUT);
@@ -309,14 +310,16 @@ void setup() {
   lcd.begin(16, 4);
   lcd.clear();
   lcd.print("Pellet Burner");
+
+  lastEncoderState = (digitalRead(PIN_ENCODER_A) << 1) | digitalRead(PIN_ENCODER_B);
 }
 
 void loop() {
   float tempC = readTemperatureC();
   bool startPressed = buttonPressed(PIN_START_BUTTON);
   bool stopPressed = buttonPressed(PIN_STOP_BUTTON);
-  bool upPressed = buttonPressed(PIN_UP_BUTTON);
-  bool downPressed = buttonPressed(PIN_DOWN_BUTTON);
+  bool encoderPressed = buttonPressed(PIN_ENCODER_BTN);
+  int encoderDelta = readEncoderDelta();
 
   if (menuMode == MENU_STATUS) {
     if (startPressed || stopPressed) {
@@ -329,7 +332,7 @@ void loop() {
       showStatusScreen(tempC);
     }
   } else {
-    handleMenu(startPressed, stopPressed, upPressed, downPressed);
+    handleMenu(startPressed, stopPressed, encoderPressed, encoderDelta);
   }
 
   if (stopPressed && state != STATE_IDLE) {
