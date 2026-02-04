@@ -9,8 +9,6 @@
 
 // --- Pin configuration ---
 const uint8_t PIN_TEMP_SENSOR = 12;  // DS18B20 data pin (supply/return sensors)
-const uint8_t PIN_START_BUTTON = 2;  // active LOW with pull-up
-const uint8_t PIN_STOP_BUTTON = 3;   // active LOW with pull-up
 const uint8_t PIN_ENCODER_A = 8;     // active LOW with pull-up
 const uint8_t PIN_ENCODER_B = 9;     // active LOW with pull-up
 const uint8_t PIN_ENCODER_BTN = 4;   // active LOW with pull-up
@@ -87,6 +85,8 @@ bool currentAugerOn = false;
 bool currentIgniterOn = false;
 bool currentGrateOn = false;
 bool currentPumpOn = false;
+unsigned long lastEncoderPressMs = 0;
+bool encoderPressConsumed = false;
 
 OneWire oneWire(PIN_TEMP_SENSOR);
 DallasTemperature tempSensors(&oneWire);
@@ -278,18 +278,11 @@ void showEditScreenMs(const char *title, unsigned long valueMs) {
   lcd.print("Enc=Next Stop=Exit");
 }
 
-void handleMenu(bool startPressed, bool stopPressed, bool encoderPressed, int encoderDelta) {
+void handleMenu(bool encoderPressed, int encoderDelta) {
   if (menuMode == MENU_STATUS) {
-    if (startPressed) {
-      menuMode = MENU_EDIT_TARGET;
-    } else if (stopPressed) {
+    if (encoderPressed) {
       menuMode = MENU_EDIT_TARGET;
     }
-    return;
-  }
-
-  if (stopPressed) {
-    menuMode = MENU_STATUS;
     return;
   }
 
@@ -383,8 +376,6 @@ void handleMenu(bool startPressed, bool stopPressed, bool encoderPressed, int en
 }
 
 void setup() {
-  pinMode(PIN_START_BUTTON, INPUT_PULLUP);
-  pinMode(PIN_STOP_BUTTON, INPUT_PULLUP);
   pinMode(PIN_ENCODER_A, INPUT_PULLUP);
   pinMode(PIN_ENCODER_B, INPUT_PULLUP);
   pinMode(PIN_ENCODER_BTN, INPUT_PULLUP);
@@ -413,17 +404,32 @@ void loop() {
   float tempC = readTemperatureC();
   float returnTempC = readReturnTemperatureC();
   float exhaustTempC = readExhaustTemperatureC();
-  bool startPressed = buttonPressed(PIN_START_BUTTON);
-  bool stopPressed = buttonPressed(PIN_STOP_BUTTON);
   bool encoderPressed = buttonPressed(PIN_ENCODER_BTN);
   int encoderDelta = readEncoderDelta();
   bool roomThermostatActive = buttonPressed(PIN_ROOM_THERMOSTAT);
   int photoValue = analogRead(PIN_PHOTO_SENSOR);
   bool pelletDetected = photoValue > PHOTO_THRESHOLD;
   bool pumpShouldRun = tempC >= pumpOnTempC;
+  bool encoderPressedEvent = false;
+  bool encoderLongPress = false;
+
+  if (encoderPressed) {
+    if (lastEncoderPressMs == 0) {
+      lastEncoderPressMs = millis();
+      encoderPressConsumed = false;
+    } else if (!encoderPressConsumed && millis() - lastEncoderPressMs >= 1500) {
+      encoderLongPress = true;
+      encoderPressConsumed = true;
+    }
+  } else if (lastEncoderPressMs != 0) {
+    if (!encoderPressConsumed) {
+      encoderPressedEvent = true;
+    }
+    lastEncoderPressMs = 0;
+  }
 
   if (menuMode == MENU_STATUS) {
-    if (startPressed || stopPressed) {
+    if (encoderPressedEvent) {
       menuMode = MENU_EDIT_TARGET;
       lcd.clear();
     }
@@ -433,7 +439,10 @@ void loop() {
       showStatusScreen(tempC, returnTempC, exhaustTempC);
     }
   } else {
-    handleMenu(startPressed, stopPressed, encoderPressed, encoderDelta);
+    handleMenu(encoderPressedEvent, encoderDelta);
+    if (encoderLongPress) {
+      menuMode = MENU_STATUS;
+    }
   }
 
   if (pelletDetected) {
@@ -443,7 +452,7 @@ void loop() {
     lastFlameSeenMs = millis();
   }
 
-  if (stopPressed && state != STATE_OFF) {
+  if (encoderLongPress && state != STATE_OFF) {
     enterState(STATE_STOP);
   }
 
@@ -454,7 +463,7 @@ void loop() {
   switch (state) {
     case STATE_OFF:
       setOutputs(false, false, false, false, pumpShouldRun, 0);
-      if (startPressed && roomThermostatActive && tempC < targetTempC) {
+      if (encoderPressedEvent && roomThermostatActive && tempC < targetTempC) {
         enterState(STATE_START);
       }
       break;
@@ -574,7 +583,7 @@ void loop() {
 
     case STATE_ALARM:
       setOutputs(true, false, false, false, pumpShouldRun, 255);
-      if (startPressed) {
+      if (encoderPressedEvent) {
         enterState(STATE_STOP);
       }
       break;
