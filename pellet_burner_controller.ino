@@ -20,6 +20,7 @@ const uint8_t PIN_FAN = 5;       // PWM
 const uint8_t PIN_AUGER = 6;     // relay/MOSFET
 const uint8_t PIN_IGNITER = 7;   // relay/MOSFET
 const uint8_t PIN_GRATE_MOTOR = A2; // relay/MOSFET for moving grates
+const uint8_t PIN_PUMP_RELAY = A1;  // relay for heating pump
 const uint8_t PIN_PHOTO_SENSOR = A7; // analog photodetector
 
 const uint8_t LCD_I2C_ADDRESS = 0x27;
@@ -31,30 +32,48 @@ const uint8_t PIN_TC_SO = 11;
 // --- Control targets ---
 float targetTempC = 70.0f;
 float maxTempC = 95.0f;
-float minFlameTempC = 40.0f; // below this means flame-out
+float minFlameTempC = 40.0f; // below this means flame-out (water)
+float maxFlameTempC = 900.0f;
+float minFlameThermoC = 120.0f;
 float maxExhaustTempC = 250.0f;
+float pumpOnTempC = 45.0f;
+
+uint8_t fanMinPwm = 77;  // 30%
+uint8_t fanMaxPwm = 204; // 80%
+uint8_t ignitionFanPwm = 102; // 40%
 
 const int PHOTO_THRESHOLD = 300;
 
 // --- Timings ---
-unsigned long ignitionTimeMs = 300000; // 5 minutes
+unsigned long startTimeMs = 15000;
+unsigned long ignitionTimeMs = 120000; // 2 minutes
+unsigned long stabilizationTimeMs = 30000;
 unsigned long cooldownTimeMs = 180000; // 3 minutes
-unsigned long augerOnMs = 800;
-unsigned long augerOffMs = 3200;
+unsigned long augerOnMs = 1200;
+unsigned long augerOffMs = 5000;
+unsigned long ignitionAugerOnMs = 600;
+unsigned long ignitionAugerOffMs = 8000;
 unsigned long grateCycleMs = 600000; // 10 minutes
 unsigned long grateOnMs = 5000;      // 5 seconds
 unsigned long pelletMissingTimeoutMs = 20000;
+unsigned long flameTimeoutMs = 60000;
+
+float modulationBandC = 5.0f;
 
 // --- State machine ---
 enum State {
-  STATE_IDLE,
+  STATE_OFF,
+  STATE_START,
   STATE_IGNITION,
-  STATE_RUN,
-  STATE_COOLDOWN,
-  STATE_FAULT
+  STATE_STABILIZATION,
+  STATE_WORK,
+  STATE_MODULATION,
+  STATE_CLEANING,
+  STATE_STOP,
+  STATE_ALARM
 };
 
-State state = STATE_IDLE;
+State state = STATE_OFF;
 unsigned long stateStartMs = 0;
 unsigned long lastAugerToggleMs = 0;
 bool augerOn = false;
@@ -62,6 +81,12 @@ unsigned long lastGrateCycleMs = 0;
 unsigned long grateStartMs = 0;
 bool grateOn = false;
 unsigned long lastPelletSeenMs = 0;
+unsigned long lastFlameSeenMs = 0;
+uint8_t currentFanPwm = 0;
+bool currentAugerOn = false;
+bool currentIgniterOn = false;
+bool currentGrateOn = false;
+bool currentPumpOn = false;
 
 OneWire oneWire(PIN_TEMP_SENSOR);
 DallasTemperature tempSensors(&oneWire);
@@ -106,11 +131,17 @@ float readExhaustTemperatureC() {
   return thermocouple.readCelsius();
 }
 
-void setOutputs(bool fan, bool auger, bool igniter, bool grateMotor, uint8_t fanPwm) {
+void setOutputs(bool fan, bool auger, bool igniter, bool grateMotor, bool pump, uint8_t fanPwm) {
+  currentFanPwm = fan ? fanPwm : 0;
+  currentAugerOn = auger;
+  currentIgniterOn = igniter;
+  currentGrateOn = grateMotor;
+  currentPumpOn = pump;
   analogWrite(PIN_FAN, fan ? fanPwm : 0);
   digitalWrite(PIN_AUGER, auger ? HIGH : LOW);
   digitalWrite(PIN_IGNITER, igniter ? HIGH : LOW);
   digitalWrite(PIN_GRATE_MOTOR, grateMotor ? HIGH : LOW);
+  digitalWrite(PIN_PUMP_RELAY, pump ? HIGH : LOW);
 }
 
 bool buttonPressed(uint8_t pin) {
@@ -148,61 +179,76 @@ void enterState(State next) {
   augerOn = false;
 }
 
-void updateAugerCycle() {
+void updateAugerCycle(unsigned long onMs, unsigned long offMs) {
   unsigned long now = millis();
-  unsigned long interval = augerOn ? augerOnMs : augerOffMs;
+  unsigned long interval = augerOn ? onMs : offMs;
   if (now - lastAugerToggleMs >= interval) {
     augerOn = !augerOn;
     lastAugerToggleMs = now;
   }
 }
 
-void updateGrateCycle() {
+bool updateGrateCycle() {
   unsigned long now = millis();
+  bool started = false;
   if (!grateOn && now - lastGrateCycleMs >= grateCycleMs) {
     grateOn = true;
     grateStartMs = now;
+    started = true;
   }
 
   if (grateOn && now - grateStartMs >= grateOnMs) {
     grateOn = false;
     lastGrateCycleMs = now;
   }
+  return started;
 }
 
 const char *stateLabel(State current) {
   switch (current) {
-    case STATE_IDLE:
-      return "IDLE";
+    case STATE_OFF:
+      return "OFF";
+    case STATE_START:
+      return "START";
     case STATE_IGNITION:
       return "IGNITION";
-    case STATE_RUN:
-      return "RUN";
-    case STATE_COOLDOWN:
-      return "COOLDOWN";
-    case STATE_FAULT:
-      return "FAULT";
+    case STATE_STABILIZATION:
+      return "STABLE";
+    case STATE_WORK:
+      return "WORK";
+    case STATE_MODULATION:
+      return "MOD";
+    case STATE_CLEANING:
+      return "CLEAN";
+    case STATE_STOP:
+      return "STOP";
+    case STATE_ALARM:
+      return "ALARM";
   }
   return "UNKNOWN";
 }
 
 void showStatusScreen(float supplyTempC, float returnTempC, float exhaustTempC) {
   lcd.setCursor(0, 0);
-  lcd.print("State: ");
+  lcd.print("MODE: ");
   lcd.print(stateLabel(state));
-  lcd.print("        ");
+  lcd.print("            ");
   lcd.setCursor(0, 1);
-  lcd.print("Sup:");
-  lcd.print(supplyTempC, 1);
-  lcd.print("C Ret:");
-  lcd.print(returnTempC, 1);
-  lcd.setCursor(0, 2);
-  lcd.print("Exh:");
+  lcd.print("Flame: ");
   lcd.print(exhaustTempC, 0);
-  lcd.print("C Tgt:");
-  lcd.print(targetTempC, 0);
+  lcd.print("C        ");
+  lcd.setCursor(0, 2);
+  lcd.print("Flow:");
+  lcd.print(supplyTempC, 0);
+  lcd.print(" Ret:");
+  lcd.print(returnTempC, 0);
+  lcd.print("  ");
   lcd.setCursor(0, 3);
-  lcd.print("Start/Stop=Menu   ");
+  int fanPercent = (currentFanPwm * 100) / 255;
+  lcd.print("Fan:");
+  lcd.print(fanPercent);
+  lcd.print("% Pel:");
+  lcd.print(currentAugerOn ? "ON " : "OFF");
 }
 
 void showEditScreen(const char *title, float value, const char *suffix) {
@@ -348,8 +394,9 @@ void setup() {
   pinMode(PIN_AUGER, OUTPUT);
   pinMode(PIN_IGNITER, OUTPUT);
   pinMode(PIN_GRATE_MOTOR, OUTPUT);
+  pinMode(PIN_PUMP_RELAY, OUTPUT);
 
-  setOutputs(false, false, false, false, 0);
+  setOutputs(false, false, false, false, false, 0);
 
   tempSensors.begin();
   lcd.init();
@@ -359,6 +406,7 @@ void setup() {
 
   lastEncoderState = (digitalRead(PIN_ENCODER_A) << 1) | digitalRead(PIN_ENCODER_B);
   lastPelletSeenMs = millis();
+  lastFlameSeenMs = millis();
 }
 
 void loop() {
@@ -372,6 +420,7 @@ void loop() {
   bool roomThermostatActive = buttonPressed(PIN_ROOM_THERMOSTAT);
   int photoValue = analogRead(PIN_PHOTO_SENSOR);
   bool pelletDetected = photoValue > PHOTO_THRESHOLD;
+  bool pumpShouldRun = tempC >= pumpOnTempC;
 
   if (menuMode == MENU_STATUS) {
     if (startPressed || stopPressed) {
@@ -390,72 +439,143 @@ void loop() {
   if (pelletDetected) {
     lastPelletSeenMs = millis();
   }
-
-  if (stopPressed && state != STATE_IDLE) {
-    enterState(STATE_COOLDOWN);
+  if (exhaustTempC >= minFlameThermoC) {
+    lastFlameSeenMs = millis();
   }
 
-  if (tempC >= maxTempC || exhaustTempC >= maxExhaustTempC) {
-    enterState(STATE_FAULT);
+  if (stopPressed && state != STATE_OFF) {
+    enterState(STATE_STOP);
+  }
+
+  if (tempC >= maxTempC || exhaustTempC >= maxFlameTempC || exhaustTempC >= maxExhaustTempC) {
+    enterState(STATE_ALARM);
   }
 
   switch (state) {
-    case STATE_IDLE:
-      setOutputs(false, false, false, false, 0);
-      if (startPressed && roomThermostatActive) {
+    case STATE_OFF:
+      setOutputs(false, false, false, false, pumpShouldRun, 0);
+      if (startPressed && roomThermostatActive && tempC < targetTempC) {
+        enterState(STATE_START);
+      }
+      break;
+
+    case STATE_START: {
+      updateAugerCycle(400, 4000);
+      bool grateStarted = updateGrateCycle();
+      setOutputs(true, augerOn, false, grateOn, pumpShouldRun, fanMinPwm);
+      if (grateStarted) {
+        enterState(STATE_CLEANING);
+        break;
+      }
+      if (millis() - stateStartMs >= startTimeMs) {
         enterState(STATE_IGNITION);
       }
       break;
+    }
 
     case STATE_IGNITION: {
-      updateAugerCycle();
-      updateGrateCycle();
-      setOutputs(true, augerOn, true, grateOn, 200);
-
-      if (tempC >= minFlameTempC) {
-        enterState(STATE_RUN);
+      updateAugerCycle(ignitionAugerOnMs, ignitionAugerOffMs);
+      bool grateStarted = updateGrateCycle();
+      setOutputs(true, augerOn, true, grateOn, pumpShouldRun, ignitionFanPwm);
+      if (grateStarted) {
+        enterState(STATE_CLEANING);
+        break;
       }
 
-      if (millis() - stateStartMs >= ignitionTimeMs) {
-        enterState(STATE_FAULT);
+      if (exhaustTempC >= minFlameThermoC || pelletDetected) {
+        enterState(STATE_STABILIZATION);
       }
 
-      if (millis() - lastPelletSeenMs >= pelletMissingTimeoutMs) {
-        enterState(STATE_FAULT);
-      }
-      break;
-    }
-
-    case STATE_RUN: {
-      updateAugerCycle();
-      updateGrateCycle();
-      bool needHeat = tempC < targetTempC && roomThermostatActive;
-      uint8_t fanPwm = needHeat ? 220 : 160;
-
-      setOutputs(true, needHeat ? augerOn : false, false, grateOn, fanPwm);
-
-      if (tempC < minFlameTempC) {
-        enterState(STATE_FAULT);
-      }
-
-      if (millis() - lastPelletSeenMs >= pelletMissingTimeoutMs) {
-        enterState(STATE_FAULT);
+      if (millis() - stateStartMs >= ignitionTimeMs ||
+          millis() - lastPelletSeenMs >= pelletMissingTimeoutMs ||
+          millis() - lastFlameSeenMs >= flameTimeoutMs) {
+        enterState(STATE_ALARM);
       }
       break;
     }
 
-    case STATE_COOLDOWN:
+    case STATE_STABILIZATION: {
+      updateAugerCycle(augerOnMs, augerOffMs);
+      bool grateStarted = updateGrateCycle();
+      setOutputs(true, augerOn, false, grateOn, pumpShouldRun, fanMinPwm);
+      if (grateStarted) {
+        enterState(STATE_CLEANING);
+        break;
+      }
+
+      if (millis() - stateStartMs >= stabilizationTimeMs) {
+        enterState(STATE_WORK);
+      }
+
+      if (millis() - lastFlameSeenMs >= flameTimeoutMs) {
+        enterState(STATE_ALARM);
+      }
+      break;
+    }
+
+    case STATE_WORK: {
+      updateAugerCycle(augerOnMs, augerOffMs);
+      bool grateStarted = updateGrateCycle();
+      uint8_t fanPwm = fanMaxPwm;
+      setOutputs(true, augerOn, false, grateOn, pumpShouldRun, fanPwm);
+      if (grateStarted) {
+        enterState(STATE_CLEANING);
+        break;
+      }
+
+      if (!roomThermostatActive) {
+        enterState(STATE_STOP);
+      } else if (tempC >= targetTempC - modulationBandC) {
+        enterState(STATE_MODULATION);
+      }
+
+      if (millis() - lastFlameSeenMs >= flameTimeoutMs) {
+        enterState(STATE_ALARM);
+      }
+      break;
+    }
+
+    case STATE_MODULATION: {
+      updateAugerCycle(augerOnMs / 2, augerOffMs * 2);
+      bool grateStarted = updateGrateCycle();
+      setOutputs(true, augerOn, false, grateOn, pumpShouldRun, fanMinPwm);
+      if (grateStarted) {
+        enterState(STATE_CLEANING);
+        break;
+      }
+
+      if (!roomThermostatActive) {
+        enterState(STATE_STOP);
+      } else if (tempC < targetTempC - modulationBandC) {
+        enterState(STATE_WORK);
+      }
+
+      if (millis() - lastFlameSeenMs >= flameTimeoutMs) {
+        enterState(STATE_ALARM);
+      }
+      break;
+    }
+
+    case STATE_CLEANING:
       updateGrateCycle();
-      setOutputs(true, false, false, grateOn, 160);
+      setOutputs(true, false, false, grateOn, pumpShouldRun, fanMinPwm);
+      if (!grateOn) {
+        enterState(roomThermostatActive ? STATE_WORK : STATE_STOP);
+      }
+      break;
+
+    case STATE_STOP:
+      updateGrateCycle();
+      setOutputs(true, false, false, grateOn, pumpShouldRun, fanMinPwm);
       if (millis() - stateStartMs >= cooldownTimeMs) {
-        enterState(STATE_IDLE);
+        enterState(STATE_OFF);
       }
       break;
 
-    case STATE_FAULT:
-      setOutputs(true, false, false, false, 255);
+    case STATE_ALARM:
+      setOutputs(true, false, false, false, pumpShouldRun, 255);
       if (startPressed) {
-        enterState(STATE_COOLDOWN);
+        enterState(STATE_STOP);
       }
       break;
   }
