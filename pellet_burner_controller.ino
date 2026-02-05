@@ -98,11 +98,21 @@ enum MenuMode {
   MENU_SETTINGS
 };
 
+enum MenuScreen {
+  SCREEN_SETTINGS = 0,
+  SCREEN_IGNITION,
+  SCREEN_CLEANING,
+  SCREEN_SAFETY,
+  SCREEN_MANUAL,
+  SCREEN_COUNT
+};
+
 MenuMode menuMode = MENU_STATUS;
 unsigned long lastLcdUpdateMs = 0;
 int8_t lastEncoderState = 0;
 uint8_t menuIndex = 0;
 bool menuEditing = false;
+uint8_t menuScreen = SCREEN_SETTINGS;
 
 enum MenuItem {
   MENU_ITEM_TARGET,
@@ -288,57 +298,77 @@ void showEditScreenMs(const char *title, unsigned long valueMs) {
 void showMenuScreen() {
   lcd.setCursor(0, 0);
   lcd.print(menuEditing ? "> Edit " : "> Select ");
-  switch (menuIndex) {
-    case MENU_ITEM_TARGET:
-      lcd.print("Set Temp       ");
+  switch (menuScreen) {
+    case SCREEN_SETTINGS:
+      lcd.print("Settings       ");
       lcd.setCursor(0, 1);
-      lcd.print(targetTempC, 1);
-      lcd.print("C               ");
-      break;
-    case MENU_ITEM_MAX_TEMP:
-      lcd.print("Max Temp       ");
-      lcd.setCursor(0, 1);
-      lcd.print(maxTempC, 1);
-      lcd.print("C               ");
-      break;
-    case MENU_ITEM_MIN_FLAME:
-      lcd.print("Min Flame      ");
-      lcd.setCursor(0, 1);
-      lcd.print(minFlameTempC, 1);
-      lcd.print("C               ");
-      break;
-    case MENU_ITEM_IGNITION_TIME:
-      lcd.print("Ignition Time  ");
-      lcd.setCursor(0, 1);
-      lcd.print(ignitionTimeMs / 1000);
-      lcd.print(" sec            ");
-      break;
-    case MENU_ITEM_COOLDOWN_TIME:
-      lcd.print("Cooldown Time  ");
-      lcd.setCursor(0, 1);
-      lcd.print(cooldownTimeMs / 1000);
-      lcd.print(" sec            ");
-      break;
-    case MENU_ITEM_AUGER_ON:
-      lcd.print("Auger ON       ");
-      lcd.setCursor(0, 1);
+      lcd.print("Set ");
+      lcd.print(targetTempC, 0);
+      lcd.print("C Fan ");
+      lcd.print((fanMaxPwm * 100) / 255);
+      lcd.print("% ");
+      lcd.setCursor(0, 2);
+      lcd.print("Auger ");
       lcd.print(augerOnMs);
-      lcd.print(" ms             ");
-      break;
-    case MENU_ITEM_AUGER_OFF:
-      lcd.print("Auger OFF      ");
-      lcd.setCursor(0, 1);
+      lcd.print("/");
       lcd.print(augerOffMs);
-      lcd.print(" ms             ");
+      lcd.print("ms ");
+      break;
+    case SCREEN_IGNITION:
+      lcd.print("Ignition       ");
+      lcd.setCursor(0, 1);
+      lcd.print("Time ");
+      lcd.print(ignitionTimeMs / 1000);
+      lcd.print("s Fan ");
+      lcd.print((ignitionFanPwm * 100) / 255);
+      lcd.print("% ");
+      lcd.setCursor(0, 2);
+      lcd.print("Pel ");
+      lcd.print(ignitionAugerOnMs);
+      lcd.print("/");
+      lcd.print(ignitionAugerOffMs);
+      lcd.print("ms ");
+      break;
+    case SCREEN_CLEANING:
+      lcd.print("Cleaning       ");
+      lcd.setCursor(0, 1);
+      lcd.print("Time ");
+      lcd.print(grateOnMs / 1000);
+      lcd.print("s ");
+      lcd.setCursor(0, 2);
+      lcd.print("Period ");
+      lcd.print(grateCycleMs / 60000);
+      lcd.print("min ");
+      break;
+    case SCREEN_SAFETY:
+      lcd.print("Safety         ");
+      lcd.setCursor(0, 1);
+      lcd.print("Max ");
+      lcd.print(maxFlameTempC, 0);
+      lcd.print("C ");
+      lcd.setCursor(0, 2);
+      lcd.print("Min ");
+      lcd.print(minFlameThermoC, 0);
+      lcd.print("C ");
+      break;
+    case SCREEN_MANUAL:
+      lcd.print("Manual         ");
+      lcd.setCursor(0, 1);
+      lcd.print("Fan ");
+      lcd.print((currentFanPwm * 100) / 255);
+      lcd.print("% ");
+      lcd.setCursor(0, 2);
+      lcd.print("Pel ");
+      lcd.print(currentAugerOn ? "ON " : "OFF");
+      lcd.print(" Ign ");
+      lcd.print(currentIgniterOn ? "ON " : "OFF");
       break;
     default:
       break;
   }
 
-  lcd.setCursor(0, 2);
-  lcd.print(menuEditing ? "Turn=Change     " : "Turn=Scroll     ");
   lcd.setCursor(0, 3);
-  lcd.print("Press=Select    ");
+  lcd.print(menuEditing ? "Turn=Change     " : "Turn=Screen     ");
 }
 
 void handleMenu(bool encoderPressed, int encoderDelta) {
@@ -357,35 +387,35 @@ void handleMenu(bool encoderPressed, int encoderDelta) {
 
   if (encoderDelta != 0) {
     if (!menuEditing) {
-      int nextIndex = static_cast<int>(menuIndex) + encoderDelta;
-      if (nextIndex < 0) {
-        nextIndex = MENU_ITEM_COUNT - 1;
-      } else if (nextIndex >= MENU_ITEM_COUNT) {
-        nextIndex = 0;
+      int nextScreen = static_cast<int>(menuScreen) + encoderDelta;
+      if (nextScreen < 0) {
+        nextScreen = SCREEN_COUNT - 1;
+      } else if (nextScreen >= SCREEN_COUNT) {
+        nextScreen = 0;
       }
-      menuIndex = static_cast<uint8_t>(nextIndex);
+      menuScreen = static_cast<uint8_t>(nextScreen);
     } else {
-      switch (menuIndex) {
-        case MENU_ITEM_TARGET:
+      switch (menuScreen) {
+        case SCREEN_SETTINGS:
           targetTempC = max(0.0f, targetTempC + encoderDelta);
-          break;
-        case MENU_ITEM_MAX_TEMP:
-          maxTempC = max(0.0f, maxTempC + encoderDelta);
-          break;
-        case MENU_ITEM_MIN_FLAME:
-          minFlameTempC = max(0.0f, minFlameTempC + encoderDelta);
-          break;
-        case MENU_ITEM_IGNITION_TIME:
-          ignitionTimeMs = max(10000UL, ignitionTimeMs + (encoderDelta * 10000L));
-          break;
-        case MENU_ITEM_COOLDOWN_TIME:
-          cooldownTimeMs = max(10000UL, cooldownTimeMs + (encoderDelta * 10000L));
-          break;
-        case MENU_ITEM_AUGER_ON:
+          fanMaxPwm = static_cast<uint8_t>(min(255, max(0, fanMaxPwm + encoderDelta * 5)));
           augerOnMs = max(100UL, augerOnMs + (encoderDelta * 100L));
           break;
-        case MENU_ITEM_AUGER_OFF:
-          augerOffMs = max(100UL, augerOffMs + (encoderDelta * 100L));
+        case SCREEN_IGNITION:
+          ignitionTimeMs = max(10000UL, ignitionTimeMs + (encoderDelta * 10000L));
+          ignitionFanPwm = static_cast<uint8_t>(min(255, max(0, ignitionFanPwm + encoderDelta * 5)));
+          ignitionAugerOnMs = max(100UL, ignitionAugerOnMs + (encoderDelta * 100L));
+          break;
+        case SCREEN_CLEANING:
+          grateOnMs = max(1000UL, grateOnMs + (encoderDelta * 1000L));
+          grateCycleMs = max(60000UL, grateCycleMs + (encoderDelta * 60000L));
+          break;
+        case SCREEN_SAFETY:
+          maxFlameTempC = max(0.0f, maxFlameTempC + encoderDelta * 5.0f);
+          minFlameThermoC = max(0.0f, minFlameThermoC + encoderDelta * 5.0f);
+          break;
+        case SCREEN_MANUAL:
+          fanMinPwm = static_cast<uint8_t>(min(255, max(0, fanMinPwm + encoderDelta * 5)));
           break;
         default:
           break;
@@ -457,6 +487,7 @@ void loop() {
     if (encoderPressedEvent) {
       menuMode = MENU_SETTINGS;
       menuEditing = false;
+      menuScreen = SCREEN_SETTINGS;
       lcd.clear();
     }
 
