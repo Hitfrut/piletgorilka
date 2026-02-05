@@ -95,18 +95,25 @@ MAX6675 thermocouple(PIN_TC_SCK, PIN_TC_CS, PIN_TC_SO);
 
 enum MenuMode {
   MENU_STATUS,
-  MENU_EDIT_TARGET,
-  MENU_EDIT_MAX,
-  MENU_EDIT_MIN_FLAME,
-  MENU_EDIT_IGNITION,
-  MENU_EDIT_COOLDOWN,
-  MENU_EDIT_AUGER_ON,
-  MENU_EDIT_AUGER_OFF
+  MENU_SETTINGS
 };
 
 MenuMode menuMode = MENU_STATUS;
 unsigned long lastLcdUpdateMs = 0;
 int8_t lastEncoderState = 0;
+uint8_t menuIndex = 0;
+bool menuEditing = false;
+
+enum MenuItem {
+  MENU_ITEM_TARGET,
+  MENU_ITEM_MAX_TEMP,
+  MENU_ITEM_MIN_FLAME,
+  MENU_ITEM_IGNITION_TIME,
+  MENU_ITEM_COOLDOWN_TIME,
+  MENU_ITEM_AUGER_ON,
+  MENU_ITEM_AUGER_OFF,
+  MENU_ITEM_COUNT
+};
 
 // --- Helper functions ---
 float readTemperatureC() {
@@ -278,68 +285,111 @@ void showEditScreenMs(const char *title, unsigned long valueMs) {
   lcd.print("Enc=Next Stop=Exit");
 }
 
+void showMenuScreen() {
+  lcd.setCursor(0, 0);
+  lcd.print(menuEditing ? "> Edit " : "> Select ");
+  switch (menuIndex) {
+    case MENU_ITEM_TARGET:
+      lcd.print("Set Temp       ");
+      lcd.setCursor(0, 1);
+      lcd.print(targetTempC, 1);
+      lcd.print("C               ");
+      break;
+    case MENU_ITEM_MAX_TEMP:
+      lcd.print("Max Temp       ");
+      lcd.setCursor(0, 1);
+      lcd.print(maxTempC, 1);
+      lcd.print("C               ");
+      break;
+    case MENU_ITEM_MIN_FLAME:
+      lcd.print("Min Flame      ");
+      lcd.setCursor(0, 1);
+      lcd.print(minFlameTempC, 1);
+      lcd.print("C               ");
+      break;
+    case MENU_ITEM_IGNITION_TIME:
+      lcd.print("Ignition Time  ");
+      lcd.setCursor(0, 1);
+      lcd.print(ignitionTimeMs / 1000);
+      lcd.print(" sec            ");
+      break;
+    case MENU_ITEM_COOLDOWN_TIME:
+      lcd.print("Cooldown Time  ");
+      lcd.setCursor(0, 1);
+      lcd.print(cooldownTimeMs / 1000);
+      lcd.print(" sec            ");
+      break;
+    case MENU_ITEM_AUGER_ON:
+      lcd.print("Auger ON       ");
+      lcd.setCursor(0, 1);
+      lcd.print(augerOnMs);
+      lcd.print(" ms             ");
+      break;
+    case MENU_ITEM_AUGER_OFF:
+      lcd.print("Auger OFF      ");
+      lcd.setCursor(0, 1);
+      lcd.print(augerOffMs);
+      lcd.print(" ms             ");
+      break;
+    default:
+      break;
+  }
+
+  lcd.setCursor(0, 2);
+  lcd.print(menuEditing ? "Turn=Change     " : "Turn=Scroll     ");
+  lcd.setCursor(0, 3);
+  lcd.print("Press=Select    ");
+}
+
 void handleMenu(bool encoderPressed, int encoderDelta) {
   if (menuMode == MENU_STATUS) {
     if (encoderPressed) {
-      menuMode = MENU_EDIT_TARGET;
+      menuMode = MENU_SETTINGS;
+      menuEditing = false;
+      lcd.clear();
     }
     return;
   }
 
   if (encoderPressed) {
-    switch (menuMode) {
-      case MENU_EDIT_TARGET:
-        menuMode = MENU_EDIT_MAX;
-        break;
-      case MENU_EDIT_MAX:
-        menuMode = MENU_EDIT_MIN_FLAME;
-        break;
-      case MENU_EDIT_MIN_FLAME:
-        menuMode = MENU_EDIT_IGNITION;
-        break;
-      case MENU_EDIT_IGNITION:
-        menuMode = MENU_EDIT_COOLDOWN;
-        break;
-      case MENU_EDIT_COOLDOWN:
-        menuMode = MENU_EDIT_AUGER_ON;
-        break;
-      case MENU_EDIT_AUGER_ON:
-        menuMode = MENU_EDIT_AUGER_OFF;
-        break;
-      case MENU_EDIT_AUGER_OFF:
-        menuMode = MENU_STATUS;
-        break;
-      default:
-        break;
-    }
-    return;
+    menuEditing = !menuEditing;
   }
 
   if (encoderDelta != 0) {
-    switch (menuMode) {
-      case MENU_EDIT_TARGET:
-        targetTempC = max(0.0f, targetTempC + encoderDelta);
-        break;
-      case MENU_EDIT_MAX:
-        maxTempC = max(0.0f, maxTempC + encoderDelta);
-        break;
-      case MENU_EDIT_MIN_FLAME:
-        minFlameTempC = max(0.0f, minFlameTempC + encoderDelta);
-        break;
-      case MENU_EDIT_IGNITION:
-        ignitionTimeMs = max(10000UL, ignitionTimeMs + (encoderDelta * 10000L));
-        break;
-      case MENU_EDIT_COOLDOWN:
-        cooldownTimeMs = max(10000UL, cooldownTimeMs + (encoderDelta * 10000L));
-        break;
-      case MENU_EDIT_AUGER_ON:
-        augerOnMs = max(100UL, augerOnMs + (encoderDelta * 100L));
-        break;
-      case MENU_EDIT_AUGER_OFF:
-        augerOffMs = max(100UL, augerOffMs + (encoderDelta * 100L));
-        break;
-      default:
-        break;
+    if (!menuEditing) {
+      int nextIndex = static_cast<int>(menuIndex) + encoderDelta;
+      if (nextIndex < 0) {
+        nextIndex = MENU_ITEM_COUNT - 1;
+      } else if (nextIndex >= MENU_ITEM_COUNT) {
+        nextIndex = 0;
+      }
+      menuIndex = static_cast<uint8_t>(nextIndex);
+    } else {
+      switch (menuIndex) {
+        case MENU_ITEM_TARGET:
+          targetTempC = max(0.0f, targetTempC + encoderDelta);
+          break;
+        case MENU_ITEM_MAX_TEMP:
+          maxTempC = max(0.0f, maxTempC + encoderDelta);
+          break;
+        case MENU_ITEM_MIN_FLAME:
+          minFlameTempC = max(0.0f, minFlameTempC + encoderDelta);
+          break;
+        case MENU_ITEM_IGNITION_TIME:
+          ignitionTimeMs = max(10000UL, ignitionTimeMs + (encoderDelta * 10000L));
+          break;
+        case MENU_ITEM_COOLDOWN_TIME:
+          cooldownTimeMs = max(10000UL, cooldownTimeMs + (encoderDelta * 10000L));
+          break;
+        case MENU_ITEM_AUGER_ON:
+          augerOnMs = max(100UL, augerOnMs + (encoderDelta * 100L));
+          break;
+        case MENU_ITEM_AUGER_OFF:
+          augerOffMs = max(100UL, augerOffMs + (encoderDelta * 100L));
+          break;
+        default:
+          break;
+      }
     }
   }
 
@@ -347,32 +397,7 @@ void handleMenu(bool encoderPressed, int encoderDelta) {
     return;
   }
   lastLcdUpdateMs = millis();
-
-  switch (menuMode) {
-    case MENU_EDIT_TARGET:
-      showEditScreen("Target temp", targetTempC, "C");
-      break;
-    case MENU_EDIT_MAX:
-      showEditScreen("Max temp", maxTempC, "C");
-      break;
-    case MENU_EDIT_MIN_FLAME:
-      showEditScreen("Min flame", minFlameTempC, "C");
-      break;
-    case MENU_EDIT_IGNITION:
-      showEditScreenMs("Ignition time", ignitionTimeMs);
-      break;
-    case MENU_EDIT_COOLDOWN:
-      showEditScreenMs("Cooldown time", cooldownTimeMs);
-      break;
-    case MENU_EDIT_AUGER_ON:
-      showEditScreenMs("Auger ON", augerOnMs);
-      break;
-    case MENU_EDIT_AUGER_OFF:
-      showEditScreenMs("Auger OFF", augerOffMs);
-      break;
-    default:
-      break;
-  }
+  showMenuScreen();
 }
 
 void setup() {
@@ -430,7 +455,8 @@ void loop() {
 
   if (menuMode == MENU_STATUS) {
     if (encoderPressedEvent) {
-      menuMode = MENU_EDIT_TARGET;
+      menuMode = MENU_SETTINGS;
+      menuEditing = false;
       lcd.clear();
     }
 
@@ -442,6 +468,7 @@ void loop() {
     handleMenu(encoderPressedEvent, encoderDelta);
     if (encoderLongPress) {
       menuMode = MENU_STATUS;
+      menuEditing = false;
     }
   }
 
