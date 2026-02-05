@@ -9,8 +9,8 @@
 
 // --- Pin configuration ---
 const uint8_t PIN_TEMP_SENSOR = 12;  // DS18B20 data pin (supply/return sensors)
-const uint8_t PIN_ENCODER_A = 8;     // active LOW with pull-up
-const uint8_t PIN_ENCODER_B = 9;     // active LOW with pull-up
+const uint8_t PIN_ENCODER_A = 2;     // active LOW with pull-up
+const uint8_t PIN_ENCODER_B = 3;     // active LOW with pull-up
 const uint8_t PIN_ENCODER_BTN = 4;   // active LOW with pull-up
 const uint8_t PIN_ROOM_THERMOSTAT = A3; // active LOW with pull-up
 
