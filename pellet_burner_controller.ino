@@ -426,6 +426,7 @@ void setup() {
   lcd.print("Pellet Burner");
 
   encoder.setType(TYPE2);
+  encoder.setTickMode(AUTO);
   lastPelletSeenMs = millis();
   lastFlameSeenMs = millis();
 }
@@ -436,9 +437,9 @@ void loop() {
   float exhaustTempC = readExhaustTemperatureC();
   encoder.tick();
   int encoderDelta = 0;
-  if (encoder.isRight()) {
+  if (encoder.isRight() || encoder.isRightH()) {
     encoderDelta = 1;
-  } else if (encoder.isLeft()) {
+  } else if (encoder.isLeft() || encoder.isLeftH()) {
     encoderDelta = -1;
   }
   bool roomThermostatActive = buttonPressed(PIN_ROOM_THERMOSTAT);
