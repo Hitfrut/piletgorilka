@@ -6,6 +6,7 @@
 #include <DallasTemperature.h>
 #include <LiquidCrystal_I2C.h>
 #include <max6675.h>
+#include <GyverEncoder.h>
 
 // --- Pin configuration ---
 const uint8_t PIN_TEMP_SENSOR = 12;  // DS18B20 data pin (supply/return sensors)
@@ -85,13 +86,12 @@ bool currentAugerOn = false;
 bool currentIgniterOn = false;
 bool currentGrateOn = false;
 bool currentPumpOn = false;
-unsigned long lastEncoderPressMs = 0;
-bool encoderPressConsumed = false;
 
 OneWire oneWire(PIN_TEMP_SENSOR);
 DallasTemperature tempSensors(&oneWire);
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 20, 4);
 MAX6675 thermocouple(PIN_TC_SCK, PIN_TC_CS, PIN_TC_SO);
+Encoder encoder(PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_BTN);
 
 enum MenuMode {
   MENU_STATUS,
@@ -109,7 +109,6 @@ enum MenuScreen {
 
 MenuMode menuMode = MENU_STATUS;
 unsigned long lastLcdUpdateMs = 0;
-int8_t lastEncoderState = 0;
 uint8_t menuIndex = 0;
 bool menuEditing = false;
 uint8_t menuScreen = SCREEN_SETTINGS;
@@ -163,30 +162,6 @@ void setOutputs(bool fan, bool auger, bool igniter, bool grateMotor, bool pump, 
 
 bool buttonPressed(uint8_t pin) {
   return digitalRead(pin) == LOW;
-}
-
-int readEncoderDelta() {
-  int a = digitalRead(PIN_ENCODER_A);
-  int b = digitalRead(PIN_ENCODER_B);
-  int8_t state = (a << 1) | b;
-  int delta = 0;
-
-  if (state != lastEncoderState) {
-    if ((lastEncoderState == 0b00 && state == 0b01) ||
-        (lastEncoderState == 0b01 && state == 0b11) ||
-        (lastEncoderState == 0b11 && state == 0b10) ||
-        (lastEncoderState == 0b10 && state == 0b00)) {
-      delta = 1;
-    } else if ((lastEncoderState == 0b00 && state == 0b10) ||
-               (lastEncoderState == 0b10 && state == 0b11) ||
-               (lastEncoderState == 0b11 && state == 0b01) ||
-               (lastEncoderState == 0b01 && state == 0b00)) {
-      delta = -1;
-    }
-    lastEncoderState = state;
-  }
-
-  return delta;
 }
 
 void enterState(State next) {
@@ -450,7 +425,7 @@ void setup() {
   lcd.clear();
   lcd.print("Pellet Burner");
 
-  lastEncoderState = (digitalRead(PIN_ENCODER_A) << 1) | digitalRead(PIN_ENCODER_B);
+  encoder.setType(TYPE2);
   lastPelletSeenMs = millis();
   lastFlameSeenMs = millis();
 }
@@ -459,29 +434,19 @@ void loop() {
   float tempC = readTemperatureC();
   float returnTempC = readReturnTemperatureC();
   float exhaustTempC = readExhaustTemperatureC();
-  bool encoderPressed = buttonPressed(PIN_ENCODER_BTN);
-  int encoderDelta = readEncoderDelta();
+  encoder.tick();
+  int encoderDelta = 0;
+  if (encoder.isRight()) {
+    encoderDelta = 1;
+  } else if (encoder.isLeft()) {
+    encoderDelta = -1;
+  }
   bool roomThermostatActive = buttonPressed(PIN_ROOM_THERMOSTAT);
   int photoValue = analogRead(PIN_PHOTO_SENSOR);
   bool pelletDetected = photoValue > PHOTO_THRESHOLD;
   bool pumpShouldRun = tempC >= pumpOnTempC;
-  bool encoderPressedEvent = false;
-  bool encoderLongPress = false;
-
-  if (encoderPressed) {
-    if (lastEncoderPressMs == 0) {
-      lastEncoderPressMs = millis();
-      encoderPressConsumed = false;
-    } else if (!encoderPressConsumed && millis() - lastEncoderPressMs >= 1500) {
-      encoderLongPress = true;
-      encoderPressConsumed = true;
-    }
-  } else if (lastEncoderPressMs != 0) {
-    if (!encoderPressConsumed) {
-      encoderPressedEvent = true;
-    }
-    lastEncoderPressMs = 0;
-  }
+  bool encoderPressedEvent = encoder.isClick();
+  bool encoderLongPress = encoder.isHolded();
 
   if (menuMode == MENU_STATUS) {
     if (encoderPressedEvent) {

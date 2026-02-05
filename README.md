@@ -189,6 +189,7 @@ Fan: 65%  Pellet: ON
 - DallasTemperature
 - LiquidCrystal_I2C
 - max6675
+- GyverEncoder
 
 ## Важно
 
